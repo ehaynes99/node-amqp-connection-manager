@@ -553,8 +553,20 @@ export default class ChannelWrapper extends EventEmitter {
         return !this._irrecoverableCode || !IRRECOVERABLE_ERRORS.includes(this._irrecoverableCode);
     }
 
+    private removeUnconfirmedMessage(message: Message) {
+        const toRemove = this._unconfirmedMessages.indexOf(message);
+        if (toRemove === -1) {
+            throw new Error(`Message is not in _unconfirmedMessages!`);
+        }
+        const removed = this._unconfirmedMessages.splice(toRemove, 1);
+        if (this._unconfirmedMessages.length === 0 && this._messages.length === 0) {
+            this.emit('drain');
+        }
+        return removed[0];
+    }
+
     private _messageResolved(message: Message, result: boolean) {
-        removeUnconfirmedMessage(this._unconfirmedMessages, message);
+        this.removeUnconfirmedMessage(message);
         message.resolve(result);
     }
 
@@ -562,12 +574,12 @@ export default class ChannelWrapper extends EventEmitter {
         if (!this._channel && this._canWaitReconnection()) {
             // Tried to write to a closed channel.  Leave the message in the queue and we'll try again when
             // we reconnect.
-            removeUnconfirmedMessage(this._unconfirmedMessages, message);
+            this.removeUnconfirmedMessage(message);
             this._messages.push(message);
         } else {
             // Something went wrong trying to send this message - could be JSON.stringify failed, could be
             // the broker rejected the message. Either way, reject it back
-            removeUnconfirmedMessage(this._unconfirmedMessages, message);
+            this.removeUnconfirmedMessage(message);
             message.reject(err);
         }
     }
@@ -970,13 +982,4 @@ export default class ChannelWrapper extends EventEmitter {
             throw new Error(`Not connected.`);
         }
     }
-}
-
-function removeUnconfirmedMessage(arr: Message[], message: Message) {
-    const toRemove = arr.indexOf(message);
-    if (toRemove === -1) {
-        throw new Error(`Message is not in _unconfirmedMessages!`);
-    }
-    const removed = arr.splice(toRemove, 1);
-    return removed[0];
 }

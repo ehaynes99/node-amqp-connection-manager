@@ -585,7 +585,6 @@ describe('ChannelWrapper', function () {
             channelWrapper.checkExchange('fish');
             expect(channel.checkExchange).to.have.beenCalledTimes(1);
             expect(channel.checkExchange).to.have.beenCalledWith('fish');
-            
         });
     });
 
@@ -607,7 +606,7 @@ describe('ChannelWrapper', function () {
             channelWrapper.bindQueue('dog', 'bone', 'legs');
             expect(channel.bindQueue).to.have.beenCalledTimes(1);
             expect(channel.bindQueue).to.have.beenCalledWith('dog', 'bone', 'legs', undefined);
-            
+
             channelWrapper.unbindQueue('dog', 'bone', 'legs');
             expect(channel.unbindQueue).to.have.beenCalledTimes(1);
             expect(channel.unbindQueue).to.have.beenCalledWith('dog', 'bone', 'legs', undefined);
@@ -712,6 +711,24 @@ describe('ChannelWrapper', function () {
             messageId: 'foo',
         });
         return Promise.all([channelWrapper.close(), expect(p1).to.be.rejected]);
+    });
+
+    it('should emit a "drain" event when all messages have been sent', async function () {
+        connectionManager.simulateConnect();
+        const channelWrapper = new ChannelWrapper(connectionManager);
+        let drained = false;
+        channelWrapper.on('drain', () => (drained = true));
+
+        await channelWrapper.waitForConnect();
+        await channelWrapper.publish('exchange', 'routingKey', {
+            message: 'woo',
+        });
+        await channelWrapper.publish('exchange', 'routingKey', {
+            message: 'hoo',
+        });
+        await promiseTools.delay(10);
+
+        expect(drained).to.be.true;
     });
 
     it('should encode JSON messages', function () {
