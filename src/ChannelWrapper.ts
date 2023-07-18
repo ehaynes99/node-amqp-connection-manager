@@ -125,6 +125,8 @@ export default class ChannelWrapper extends EventEmitter {
     private _irrecoverableCode: number | undefined;
     /** Consumers which will be reconnected on channel errors etc. */
     private _consumers: Consumer[] = [];
+    /** Callbacks for `waitForDrain` */
+    private _drainCallbacks: (() => void)[] = [];
 
     /**
      * The currently connected channel.  Note that not all setup functions
@@ -273,6 +275,24 @@ export default class ChannelWrapper extends EventEmitter {
             this._channel && !this._settingUp
                 ? Promise.resolve()
                 : new Promise((resolve) => this.once('connect', resolve))
+        );
+    }
+
+    /**
+     * Returns a Promise which resolves when all messages have been sent.
+     * Note that "sent" here just means that they've been passed to the
+     * underlying channel, which has different semantics depending on
+     * whether `confirmation` is enabled.
+     *
+     * @param [done] - Optional callback.
+     * @returns - Resolves when all queued messages have been sent
+     */
+    waitForDrain(done?: pb.Callback<void>): Promise<void> {
+        return pb.addCallback(
+            done,
+            this._unconfirmedMessages.length === 0 && this._messages.length === 0
+                ? Promise.resolve()
+                : new Promise((resolve) => this._drainCallbacks.push(resolve))
         );
     }
 
@@ -500,8 +520,9 @@ export default class ChannelWrapper extends EventEmitter {
     //
     // Any unsent messages will have their associated Promises rejected.
     //
-    close(): Promise<void> {
-        return Promise.resolve().then(() => {
+    close(waitForPending?: boolean): Promise<void> {
+        const canClose = waitForPending ? this.waitForDrain() : Promise.resolve();
+        return canClose.then(() => {
             this._working = false;
             if (this._messages.length !== 0) {
                 // Reject any unsent messages.
@@ -553,8 +574,21 @@ export default class ChannelWrapper extends EventEmitter {
         return !this._irrecoverableCode || !IRRECOVERABLE_ERRORS.includes(this._irrecoverableCode);
     }
 
+    private removeUnconfirmedMessage(message: Message) {
+        const toRemove = this._unconfirmedMessages.indexOf(message);
+        if (toRemove === -1) {
+            throw new Error(`Message is not in _unconfirmedMessages!`);
+        }
+        const removed = this._unconfirmedMessages.splice(toRemove, 1);
+        if (this._unconfirmedMessages.length === 0 && this._messages.length === 0) {
+            this._drainCallbacks.forEach((handler) => handler());
+            this._drainCallbacks = [];
+        }
+        return removed[0];
+    }
+
     private _messageResolved(message: Message, result: boolean) {
-        removeUnconfirmedMessage(this._unconfirmedMessages, message);
+        this.removeUnconfirmedMessage(message);
         message.resolve(result);
     }
 
@@ -562,12 +596,12 @@ export default class ChannelWrapper extends EventEmitter {
         if (!this._channel && this._canWaitReconnection()) {
             // Tried to write to a closed channel.  Leave the message in the queue and we'll try again when
             // we reconnect.
-            removeUnconfirmedMessage(this._unconfirmedMessages, message);
+            this.removeUnconfirmedMessage(message);
             this._messages.push(message);
         } else {
             // Something went wrong trying to send this message - could be JSON.stringify failed, could be
             // the broker rejected the message. Either way, reject it back
-            removeUnconfirmedMessage(this._unconfirmedMessages, message);
+            this.removeUnconfirmedMessage(message);
             message.reject(err);
         }
     }
@@ -970,13 +1004,4 @@ export default class ChannelWrapper extends EventEmitter {
             throw new Error(`Not connected.`);
         }
     }
-}
-
-function removeUnconfirmedMessage(arr: Message[], message: Message) {
-    const toRemove = arr.indexOf(message);
-    if (toRemove === -1) {
-        throw new Error(`Message is not in _unconfirmedMessages!`);
-    }
-    const removed = arr.splice(toRemove, 1);
-    return removed[0];
 }
